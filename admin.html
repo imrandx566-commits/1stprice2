@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Probashi Voice — Admin</title>
+<link rel="stylesheet" href="assets/css/style.css">
+<style>
+.admin-wrap{max-width:1000px;margin:3rem auto;padding:1rem}.admin-panel{padding:1.25rem;margin:1rem 0;border:1px solid #6b572b;border-radius:14px;background:#111}.admin-panel input,.admin-panel select,.admin-panel textarea{width:100%;padding:.75rem;margin:.35rem 0 1rem;background:#191919;color:#fff;border:1px solid #555;border-radius:7px}.admin-panel button{padding:.7rem 1rem;margin:.25rem;background:#d8b45a;color:#111;border:0;border-radius:7px;cursor:pointer;font-weight:700}.admin-panel table{width:100%;border-collapse:collapse}.admin-panel td,.admin-panel th{padding:.6rem;border-bottom:1px solid #444;text-align:left}.notice{padding:.8rem;background:#202020;border-left:3px solid #d8b45a;white-space:pre-wrap}.hidden{display:none!important}
+</style>
+</head>
+<body>
+<main class="admin-wrap">
+  <h1>Probashi Voice <span style="color:#d8b45a">Admin</span></h1>
+  <p>Sign in using the email invited in Supabase Auth. Only accounts granted an admin role can manage records.</p>
+  <div id="status" class="notice">Checking configuration…</div>
+  <section id="authBox" class="admin-panel">
+    <h2>Admin sign in</h2>
+    <form id="signInForm">
+      <label>Email<input id="email" type="email" autocomplete="username" required></label>
+      <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Sign in</button><button type="button" id="signOut" class="hidden">Sign out</button>
+    </form>
+  </section>
+  <section id="editor" class="admin-panel hidden">
+    <h2>Add / update number record</h2>
+    <form id="recordForm">
+      <label>Country / region<input id="country" required maxlength="80" placeholder="Malaysia"></label>
+      <label>Number (3 or 4 digits)<input id="number" required pattern="[0-9]{3,4}" maxlength="4" inputmode="numeric"></label>
+      <label>Draw date<input id="drawDate" type="date"></label>
+      <label>Source / reference<input id="source" maxlength="200"></label>
+      <label>Notes<textarea id="notes" rows="2" maxlength="1000"></textarea></label>
+      <label><input id="published" type="checkbox" style="width:auto"> Published (visible to public search)</label><br>
+      <button type="submit">Save record</button><button type="button" id="resetForm">Clear</button>
+    </form>
+    <h2>Existing records</h2><div id="records"></div>
+  </section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="assets/js/supabase-config.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let client, editingId = null;
+  const status = (msg) => $('status').textContent = msg;
+  const configured = window.PROBASHI_SUPABASE_URL && !window.PROBASHI_SUPABASE_URL.includes('YOUR_PROJECT_REF')
+    && window.PROBASHI_SUPABASE_ANON_KEY && !window.PROBASHI_SUPABASE_ANON_KEY.includes('YOUR_');
+  if (!window.supabase || !configured) {
+    status('Setup required: update assets/js/supabase-config.js with your Supabase project URL and publishable/anon key. Never use a service_role key in the browser.');
+    return;
+  }
+  client = window.supabase.createClient(window.PROBASHI_SUPABASE_URL, window.PROBASHI_SUPABASE_ANON_KEY);
+  async function refresh() {
+    const {data:{user}, error: userErr} = await client.auth.getUser();
+    if (userErr || !user) { $('editor').classList.add('hidden'); $('signOut').classList.add('hidden'); status('Signed out. Sign in with the authorized admin account.'); return; }
+    const {data:profile,error} = await client.from('profiles').select('email,role').eq('id',user.id).single();
+    if (error || !profile || !['admin','super_admin'].includes(profile.role)) {
+      $('editor').classList.add('hidden'); $('signOut').classList.remove('hidden');
+      status('Signed in as '+user.email+', but this account does not have an admin role. Have a project owner verify the role in public.profiles.');
+      return;
+    }
+    status('Authenticated: '+profile.email+' · role: '+profile.role);
+    $('editor').classList.remove('hidden'); $('signOut').classList.remove('hidden'); await loadRecords();
+  }
+  async function loadRecords() {
+    const {data,error}=await client.from('number_records').select('*').order('draw_date',{ascending:false}).limit(200);
+    if(error){$('records').textContent='Could not load records: '+error.message;return;}
+    if(!data.length){$('records').textContent='No records yet.';return;}
+    const table=document.createElement('table');
+    table.innerHTML='<thead><tr><th>Region</th><th>Number</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>';
+    const tbody=document.createElement('tbody');
+    data.forEach(r=>{const tr=document.createElement('tr');
+      [r.country,r.number_value,r.draw_date||'—',r.is_published?'Published':'Draft'].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.appendChild(td)});
+      const td=document.createElement('td');const edit=document.createElement('button');edit.textContent='Edit';edit.onclick=()=>fill(r);
+      const del=document.createElement('button');del.textContent='Delete';del.onclick=async()=>{if(confirm('Delete this record?')){const {error}=await client.from('number_records').delete().eq('id',r.id);if(error)alert(error.message);else loadRecords();}};
+      td.append(edit,del);tr.appendChild(td);tbody.appendChild(tr);
+    });table.appendChild(tbody);$('records').replaceChildren(table);
+  }
+  function fill(r){editingId=r.id;$('country').value=r.country;$('number').value=r.number_value;$('drawDate').value=r.draw_date||'';$('source').value=r.source_label||'';$('notes').value=r.notes||'';$('published').checked=!!r.is_published;window.scrollTo({top:0,behavior:'smooth'});}
+  function reset(){editingId=null;$('recordForm').reset();}
+  $('signInForm').addEventListener('submit',async e=>{e.preventDefault();const {error}=await client.auth.signInWithPassword({email:$('email').value,password:$('password').value});if(error)status('Sign-in failed: '+error.message);else await refresh();});
+  $('signOut').addEventListener('click',async()=>{await client.auth.signOut();await refresh();});
+  $('resetForm').addEventListener('click',reset);
+  $('recordForm').addEventListener('submit',async e=>{e.preventDefault();const payload={country:$('country').value.trim(),number_value:$('number').value.trim(),draw_date:$('drawDate').value||null,source_label:$('source').value.trim()||null,notes:$('notes').value.trim()||null,is_published:$('published').checked};
+    let q=editingId?client.from('number_records').update(payload).eq('id',editingId):client.from('number_records').insert({...payload,created_by:(await client.auth.getUser()).data.user.id});
+    const {error}=await q;if(error){status('Save failed: '+error.message);return;}status('Record saved.');reset();await loadRecords();});
+  refresh();
+})();
+</script>
+</body></html>
